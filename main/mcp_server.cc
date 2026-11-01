@@ -19,6 +19,10 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 
+#ifndef DEVICE_DISPLAY_NAME
+#define DEVICE_DISPLAY_NAME BOARD_NAME
+#endif
+
 #define TAG "MCP"
 
 McpServer::McpServer() {}

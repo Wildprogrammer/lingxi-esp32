@@ -13,6 +13,10 @@
 #include "esp_wifi_remote.h"
 #endif
 
+#ifndef DEVICE_DISPLAY_NAME
+#define DEVICE_DISPLAY_NAME BOARD_NAME
+#endif
+
 #define TAG "SystemInfo"
 
 size_t SystemInfo::GetFlashSize() {
