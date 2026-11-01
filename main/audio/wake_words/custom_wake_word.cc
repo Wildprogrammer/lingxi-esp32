@@ -8,8 +8,33 @@
 #include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
 #include <cJSON.h>
+#include <utility>
 
 #define TAG "CustomWakeWord"
+
+namespace {
+
+std::vector<std::string> SplitWakeWordConfig(const char* value) {
+    std::vector<std::string> items;
+    std::string source = value == nullptr ? "" : value;
+    size_t start = 0;
+    while (start <= source.size()) {
+        size_t end = source.find(';', start);
+        std::string item = source.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+        if (item.empty()) {
+            return {};
+        }
+        items.push_back(std::move(item));
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return items;
+}
+
+}  // namespace
 
 CustomWakeWord::CustomWakeWord()
     : wake_word_opus_() {
@@ -92,7 +117,15 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         owns_models_ = models_ != nullptr;
 #ifdef CONFIG_CUSTOM_WAKE_WORD
         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
-        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        auto command_names = SplitWakeWordConfig(CONFIG_CUSTOM_WAKE_WORD);
+        auto display_names = SplitWakeWordConfig(CONFIG_CUSTOM_WAKE_WORD_DISPLAY);
+        if (command_names.empty() || command_names.size() != display_names.size()) {
+            ESP_LOGE(TAG, "Invalid custom wake-word fallback configuration");
+            return false;
+        }
+        for (size_t i = 0; i < command_names.size(); ++i) {
+            commands_.push_back({command_names[i], display_names[i], "wake"});
+        }
 #endif
     } else {
         models_ = models_list;

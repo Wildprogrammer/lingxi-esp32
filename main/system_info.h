@@ -14,6 +14,7 @@ public:
     static std::string GetMacAddress();
     static std::string GetChipModelName();
     static std::string GetUserAgent();
+    static std::string GetDisplayUserAgent();
     static esp_err_t PrintTaskCpuUsage(TickType_t xTicksToWait);
     static void PrintTaskList();
     static void PrintHeapStats();

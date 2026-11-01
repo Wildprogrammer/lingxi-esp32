@@ -2,6 +2,16 @@
 
 (English | [中文](README_zh.md) | [日本語](README_ja.md))
 
+> [!IMPORTANT]
+> **Lingxi is an unofficial derivative of
+> [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32).** This repository
+> preserves the complete upstream history and MIT license, and adds the
+> `wildprogrammer-esp32s3-n16r8` board, Lingxi wake/control phrases, audio
+> diagnostics, and verified volume controls. The matching computer-side
+> integration is
+> [Agent Session Gateway](https://github.com/Wildprogrammer/agent-role/tree/master/workflows/agent-session-gateway).
+> It is not an official release of the upstream project.
+
 ## Introduction
 
 👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)

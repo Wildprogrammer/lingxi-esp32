@@ -886,11 +886,29 @@ class TargetConfigurationTests(unittest.TestCase):
                     "-DSDKCONFIG_DEFAULTS="
                     "sdkconfig.defaults;build/xiaozhi-build.sdkconfig.defaults",
                     "-DBOARD_NAME=test-board",
+                    "-DDEVICE_DISPLAY_NAME=test-board",
                     "reconfigure",
                     preview=False,
                 )
         finally:
             os.chdir(previous_cwd)
+
+    def test_device_display_name_is_separate_from_reported_board_name(self):
+        board = {
+            "name": "wildprogrammer-esp32s3-n16r8",
+            "display_name": "灵溪",
+        }
+        self.assertEqual(build._get_reported_name(board), "wildprogrammer-esp32s3-n16r8")
+        self.assertEqual(build._get_device_display_name(board), "灵溪")
+        self.assertEqual(
+            build._get_device_display_name({"name": "test-board"}),
+            "test-board",
+        )
+        for invalid in ("", "bad;name", 'bad"name', "bad\\name", "bad$name"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                build._get_device_display_name(
+                    {"name": "test-board", "display_name": invalid}
+                )
 
     def test_configure_build_replaces_stale_sdkconfig_backup(self):
         previous_cwd = Path.cwd()
@@ -1065,6 +1083,54 @@ class BuildOptionTests(unittest.TestCase):
         self.assertIn("CONFIG_USE_ESP_WAKE_WORD=n", options)
         self.assertIn("CONFIG_WAKE_WORD_DISABLED=y", options)
         self.assertEqual(symbols, ["CONFIG_WAKE_WORD_DISABLED"])
+
+    def test_custom_wake_word_selects_multinet_and_preserves_aliases(self):
+        model, options, symbols = build._wake_word_sdkconfig_options(
+            "custom:ling xi=灵溪;ni hao ling xi=你好灵溪;xiao ling xi=小灵溪",
+            "esp32s3",
+        )
+        self.assertEqual(model, "custom")
+        self.assertIn("CONFIG_USE_CUSTOM_WAKE_WORD=y", options)
+        self.assertIn("CONFIG_SR_MN_CN_MULTINET7_QUANT=y", options)
+        self.assertIn(
+            'CONFIG_CUSTOM_WAKE_WORD="ling xi;ni hao ling xi;xiao ling xi"',
+            options,
+        )
+        self.assertIn(
+            'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="灵溪;你好灵溪;小灵溪"',
+            options,
+        )
+        self.assertIn("CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20", options)
+        self.assertEqual(
+            symbols,
+            ["CONFIG_USE_CUSTOM_WAKE_WORD", "CONFIG_SR_MN_CN_MULTINET7_QUANT"],
+        )
+
+    def test_custom_wake_word_accepts_board_specific_threshold(self):
+        model, options, _ = build._wake_word_sdkconfig_options(
+            "custom:ni hao ling xi=你好灵溪",
+            "esp32s3",
+            custom_threshold=25,
+        )
+        self.assertEqual(model, "custom")
+        self.assertIn("CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=25", options)
+
+    def test_custom_wake_word_rejects_invalid_or_incompatible_entries(self):
+        with self.assertRaisesRegex(ValueError, "Custom wake words require"):
+            build._wake_word_sdkconfig_options(
+                "custom:ling xi=灵溪",
+                "esp32c6",
+            )
+        with self.assertRaisesRegex(ValueError, "Invalid custom wake word entry"):
+            build._wake_word_sdkconfig_options(
+                "custom:lingxi=灵溪",
+                "esp32s3",
+            )
+        with self.assertRaisesRegex(ValueError, "must be unique"):
+            build._wake_word_sdkconfig_options(
+                "custom:ling xi=灵溪;ling xi=你好灵溪",
+                "esp32s3",
+            )
 
     def test_incompatible_wake_word_model_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "WakeNet9s"):
@@ -1487,9 +1553,14 @@ class LanguageBuildTests(unittest.TestCase):
                             idf_version=(6, 1, 0), **options,
                         )
                         configure.assert_called_once()
-                        target, fragment, name, _ = configure.call_args.args
+                        target, fragment, name, _, device_display_name = (
+                            configure.call_args.args
+                        )
                         self.assertEqual(target, variant["target"])
                         self.assertEqual(name, variant["name"])
+                        self.assertTrue(device_display_name)
+                        if variant["board"] == "wildprogrammer-esp32s3-n16r8":
+                            self.assertEqual(device_display_name, "灵溪")
                         expected = language_options["en-US" if language is None else language]
                         self.assertEqual(
                             [item for item in fragment if item.startswith("CONFIG_LANGUAGE_")],
@@ -1724,6 +1795,7 @@ class CliTests(unittest.TestCase):
             create_zip=False,
             language=None,
             wake_word=None,
+            wake_word_threshold=None,
             build_options=None,
             idf_version=(6, 0, 2),
         )

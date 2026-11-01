@@ -35,6 +35,7 @@ _WAKE_WORD_TARGETS = (
     "esp32s31",
 )
 _WAKE_WORD_MODEL_PATTERN = re.compile(r"^wn9[sl]?_[a-z0-9_]+$")
+_CUSTOM_WAKE_WORD_PHRASE_PATTERN = re.compile(r"^[a-z]+(?: [a-z]+){1,7}$")
 _ESP_SR_KCONFIG = Path(
     "managed_components/espressif__esp-sr/Kconfig.projbuild"
 )
@@ -128,6 +129,26 @@ def _get_reported_type(cfg: dict) -> str:
 def _get_reported_name(build: dict) -> str:
     """Read the compatibility-sensitive board name from a build entry."""
     return _validate_reported_identifier(build.get("name"), 'build "name"')
+
+
+def _get_device_display_name(build: dict) -> str:
+    """Read a user-facing name without changing the OTA board identity."""
+    value = build.get("display_name")
+    if value is None:
+        return _get_reported_name(build)
+    if not isinstance(value, str):
+        raise ValueError('build "display_name" must be a string')
+    value = value.strip()
+    if not value or len(value) > 32:
+        raise ValueError('build "display_name" must contain 1-32 characters')
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError('build "display_name" must not contain control characters')
+    if any(character in value for character in ('"', "\\", ";", "$")):
+        raise ValueError(
+            'build "display_name" must not contain quotes, backslashes, '
+            "semicolons, or dollar signs"
+        )
+    return value
 
 
 def _get_full_name(manufacturer: Optional[str], name: str) -> str:
@@ -295,7 +316,10 @@ def _print_wake_word_list(wake_words: list[dict[str, object]]) -> None:
             f"{str(item['model']):<{model_width}}  "
             f"{str(item['phrase']):<{phrase_width}}  {targets}"
         )
-    print("\nSpecial values: nihaoxiaozhi, hiesp, disabled")
+    print(
+        "\nSpecial values: nihaoxiaozhi, hiesp, disabled, "
+        "custom:<pinyin=display;...>"
+    )
 
 
 def _board_supports_wake_word(
@@ -328,9 +352,11 @@ def _board_supports_wake_word(
 def _wake_word_sdkconfig_options(
     wake_word: str,
     target: str,
+    custom_threshold: int = 20,
 ) -> tuple[str, list[str], list[str]]:
     """Map a wake-word model to implementation and model Kconfig options."""
-    normalized = wake_word.strip().casefold().replace("-", "_")
+    requested = wake_word.strip()
+    normalized = requested.casefold().replace("-", "_")
     if normalized == "nihaoxiaozhi":
         normalized = (
             "wn9s_nihaoxiaozhi"
@@ -352,6 +378,51 @@ def _wake_word_sdkconfig_options(
     if normalized == "disabled":
         options.append("CONFIG_WAKE_WORD_DISABLED=y")
         return normalized, options, ["CONFIG_WAKE_WORD_DISABLED"]
+
+    if normalized.startswith("custom:"):
+        if not 1 <= custom_threshold <= 99:
+            raise ValueError("Custom wake-word threshold must be between 1 and 99")
+        if target not in _AFE_WAKE_WORD_TARGETS:
+            raise ValueError(
+                f"Custom wake words require an ESP32-S3/P4/S31 target with PSRAM; "
+                f"{target!r} is not compatible"
+            )
+        entries = requested[len("custom:"):].split(";")
+        if not 1 <= len(entries) <= 8:
+            raise ValueError("Custom wake words require between 1 and 8 phrases")
+        commands: list[str] = []
+        displays: list[str] = []
+        for entry in entries:
+            command, separator, display = entry.partition("=")
+            command = " ".join(command.strip().casefold().split())
+            display = display.strip()
+            if (
+                not separator
+                or not _CUSTOM_WAKE_WORD_PHRASE_PATTERN.fullmatch(command)
+                or not display
+                or any(character in display for character in ('"', ";"))
+            ):
+                raise ValueError(
+                    "Invalid custom wake word entry. Use "
+                    "custom:<space-separated-pinyin=display;...>"
+                )
+            if command in commands or display in displays:
+                raise ValueError("Custom wake word phrases and displays must be unique")
+            commands.append(command)
+            displays.append(display)
+        options.extend(
+            [
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                f'CONFIG_CUSTOM_WAKE_WORD="{";".join(commands)}"',
+                f'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="{";".join(displays)}"',
+                f"CONFIG_CUSTOM_WAKE_WORD_THRESHOLD={custom_threshold}",
+                "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
+            ]
+        )
+        return "custom", options, [
+            "CONFIG_USE_CUSTOM_WAKE_WORD",
+            "CONFIG_SR_MN_CN_MULTINET7_QUANT",
+        ]
 
     if target not in _ESP_WAKE_WORD_TARGETS | _AFE_WAKE_WORD_TARGETS:
         raise ValueError(f"Wake-word selection is not supported for target {target}")
@@ -1422,8 +1493,11 @@ def _configure_build(
     sdkconfig_append: list[str],
     board_name: str,
     preview: bool,
+    device_display_name: Optional[str] = None,
 ) -> None:
     """Configure target, board identity and sdkconfig defaults in one CMake run."""
+    if device_display_name is None:
+        device_display_name = board_name
     sdkconfig = Path("sdkconfig")
     sdkconfig_old = Path("sdkconfig.old")
     if sdkconfig.exists():
@@ -1448,6 +1522,7 @@ def _configure_build(
         f"-DIDF_TARGET={target}",
         f"-DSDKCONFIG_DEFAULTS={';'.join(defaults)}",
         f"-DBOARD_NAME={board_name}",
+        f"-DDEVICE_DISPLAY_NAME={device_display_name}",
         "reconfigure",
         preview=preview,
     )
@@ -1517,6 +1592,7 @@ def build_board(
     create_zip: bool = False,
     language: Optional[str] = None,
     wake_word: Optional[str] = None,
+    wake_word_threshold: Optional[int] = None,
     build_options: Optional[dict[str, object]] = None,
     idf_version: tuple[int, int, int] = (6, 0, 0),
 ) -> None:
@@ -1529,6 +1605,7 @@ def build_board(
         create_zip: package merged-binary.bin under releases/ when true
         language: optional locale such as zh-CN; defaults to en-US when omitted
         wake_word: optional model/alias; otherwise selected from language and board support
+        wake_word_threshold: optional custom MultiNet threshold percentage (1-99)
         build_options: optional semantic, board-validated option values
     """
     cfg_path = _BOARDS_DIR / Path(board_type) / config_filename
@@ -1563,6 +1640,7 @@ def build_board(
 
     for build in builds:
         name = _get_reported_name(build)
+        device_display_name = _get_device_display_name(build)
         final_name = _get_release_full_name(manufacturer, build)
 
         # Process sdkconfig_append
@@ -1622,7 +1700,13 @@ def build_board(
             selected_wake_word,
             wake_word_options,
             wake_word_symbols,
-        ) = _wake_word_sdkconfig_options(requested_wake_word, target)
+        ) = _wake_word_sdkconfig_options(
+            requested_wake_word,
+            target,
+            20 if wake_word_threshold is None else wake_word_threshold,
+        )
+        if wake_word_threshold is not None and selected_wake_word != "custom":
+            raise ValueError("--wake-word-threshold requires a custom wake word")
         if selected_wake_word != "disabled" and not wake_word_supported:
             raise ValueError(
                 f"Wake-word detection is disabled or unsupported for {final_name!r}; "
@@ -1656,6 +1740,7 @@ def build_board(
         if final_name != name:
             print(f"reported_name: {name}")
         print(f"reported_type: {reported_type}")
+        print(f"device_display_name: {device_display_name}")
         print(f"target: {target}")
         if manufacturer:
             print(f"manufacturer: {manufacturer}")
@@ -1677,6 +1762,7 @@ def build_board(
             sdkconfig_append,
             name,
             preview,
+            device_display_name,
         )
         for symbols, option_name in validation_symbols:
             _validate_configured_symbols(symbols, option_name)
@@ -1780,9 +1866,17 @@ def main(argv: Optional[list[str]] = None) -> None:
         metavar="MODEL",
         help=(
             "Wake-word model (for example wn9_jarvis_tts), "
-            "'nihaoxiaozhi', 'hiesp', or 'disabled'. Defaults to nihaoxiaozhi "
-            "for zh-CN/zh-TW and hiesp otherwise; disabled on unsupported boards"
+            "'nihaoxiaozhi', 'hiesp', 'disabled', or "
+            "'custom:<pinyin=display;...>'. Defaults to nihaoxiaozhi for "
+            "zh-CN/zh-TW and hiesp otherwise; disabled on unsupported boards"
         ),
+    )
+    parser.add_argument(
+        "--wake-word-threshold",
+        type=int,
+        choices=range(1, 100),
+        metavar="PERCENT",
+        help="Custom MultiNet wake-word threshold from 1 to 99 (default: 20)",
     )
     parser.add_argument(
         "--build-options-json",
@@ -1818,6 +1912,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             or args.name
             or args.language
             or args.wake_word
+            or args.wake_word_threshold is not None
             or args.build_options_json
             or args.zip
             or args.json
@@ -1837,6 +1932,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             or args.name
             or args.language
             or args.wake_word
+            or args.wake_word_threshold is not None
             or args.build_options_json
             or args.zip
         ):
@@ -1858,6 +1954,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             or args.name
             or args.language
             or args.wake_word
+            or args.wake_word_threshold is not None
             or args.build_options_json
             or args.zip
         ):
@@ -1886,6 +1983,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             or args.name
             or args.language
             or args.wake_word
+            or args.wake_word_threshold is not None
             or args.build_options_json
         ):
             parser.error(
@@ -1965,6 +2063,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             create_zip=args.zip,
             language=args.language,
             wake_word=args.wake_word,
+            wake_word_threshold=args.wake_word_threshold,
             build_options=parsed_build_options,
             idf_version=idf_version,
         )

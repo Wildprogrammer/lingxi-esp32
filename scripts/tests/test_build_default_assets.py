@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,98 @@ SPEC.loader.exec_module(BUILD)
 
 
 class BuildDefaultAssetsTest(unittest.TestCase):
+    def test_custom_wake_word_config_supports_aligned_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdkconfig = Path(directory) / "sdkconfig"
+            sdkconfig.write_text(
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="ling xi;ni hao ling xi;xiao ling xi"\n'
+                'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="灵溪;你好灵溪;小灵溪"\n'
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=30\n",
+                encoding="utf-8",
+            )
+            config = BUILD.read_custom_wake_word_from_sdkconfig(sdkconfig)
+            self.assertEqual(config["threshold"], 0.3)
+            self.assertEqual(
+                config["commands"],
+                [
+                    {"command": "ling xi", "text": "灵溪", "action": "wake"},
+                    {
+                        "command": "ni hao ling xi",
+                        "text": "你好灵溪",
+                        "action": "wake",
+                    },
+                    {
+                        "command": "xiao ling xi",
+                        "text": "小灵溪",
+                        "action": "wake",
+                    },
+                ],
+            )
+
+    def test_custom_wake_word_config_rejects_misaligned_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdkconfig = Path(directory) / "sdkconfig"
+            sdkconfig.write_text(
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="ling xi;ni hao ling xi"\n'
+                'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="灵溪"\n'
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=30\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "semicolon-aligned"):
+                BUILD.read_custom_wake_word_from_sdkconfig(sdkconfig)
+
+    def test_custom_wake_word_config_rejects_missing_required_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdkconfig = Path(directory) / "sdkconfig"
+            sdkconfig.write_text(
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="ni hao ling xi"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "requires CONFIG_CUSTOM_WAKE_WORD"):
+                BUILD.read_custom_wake_word_from_sdkconfig(sdkconfig)
+
+    def test_custom_wake_word_config_rejects_invalid_threshold_and_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdkconfig = Path(directory) / "sdkconfig"
+            sdkconfig.write_text(
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="lingxi"\n'
+                'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="灵溪"\n'
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=30\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "pinyin"):
+                BUILD.read_custom_wake_word_from_sdkconfig(sdkconfig)
+
+            sdkconfig.write_text(
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="ni hao ling xi"\n'
+                'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="你好灵溪"\n'
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=0\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "between 1 and 100"):
+                BUILD.read_custom_wake_word_from_sdkconfig(sdkconfig)
+
+    def test_process_sr_models_fails_when_packaging_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "mn7_cn"
+            model.mkdir()
+            (model / "weights").write_bytes(b"model")
+            assets = root / "assets"
+            assets.mkdir()
+            with mock.patch.object(
+                BUILD, "pack_models", side_effect=OSError("pack failed")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Failed to generate"):
+                    BUILD.process_sr_models(
+                        [], [str(model)], str(root / "build"), str(assets)
+                    )
+
     def test_text_font_metadata_uses_bundle_charset_size_and_bpp(self):
         with tempfile.TemporaryDirectory() as directory:
             assets = Path(directory)
@@ -266,6 +359,85 @@ class ConfiguredAssetsTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("requires selected, available", result.stderr)
             self.assertFalse((root / "unused.bin").exists())
+
+    def test_cli_rejects_custom_wake_word_when_any_selected_model_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdkconfig = root / "sdkconfig"
+            sdkconfig.write_text(
+                'CONFIG_IDF_TARGET="esp32s3"\n'
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                "CONFIG_SR_MN_CN_MULTINET7_QUANT=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="ni hao ling xi"\n'
+                'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="你好灵溪"\n'
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=30\n",
+                encoding="utf-8",
+            )
+            model = root / "models" / "multinet_model" / "mn7_cn"
+            model.mkdir(parents=True)
+            (model / "weights").write_bytes(b"mn7")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/build_default_assets.py"),
+                    "--sdkconfig",
+                    str(sdkconfig),
+                    "--output",
+                    str(root / "assets.bin"),
+                    "--esp_sr_model_path",
+                    str(root / "models"),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("every selected ESP-SR MultiNet model", result.stderr)
+            self.assertFalse((root / "assets.bin").exists())
+
+    def test_cli_custom_wake_word_packs_mn7_and_fst_without_wakenet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdkconfig = root / "sdkconfig"
+            sdkconfig.write_text(
+                'CONFIG_IDF_TARGET="esp32s3"\n'
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y\n"
+                "CONFIG_SR_MN_CN_MULTINET7_QUANT=y\n"
+                'CONFIG_CUSTOM_WAKE_WORD="ni hao ling xi;xiao ling xi"\n'
+                'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="你好灵溪;小灵溪"\n'
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=30\n",
+                encoding="utf-8",
+            )
+            for name in ("mn7_cn", "fst"):
+                model = root / "models" / "multinet_model" / name
+                model.mkdir(parents=True)
+                (model / "weights").write_bytes(name.encode())
+            output = root / "assets.bin"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/build_default_assets.py"),
+                    "--sdkconfig",
+                    str(sdkconfig),
+                    "--output",
+                    str(output),
+                    "--esp_sr_model_path",
+                    str(root / "models"),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            files = BUILD.read_assets_entries(output)
+            index = json.loads(files["index.json"][0])
+            self.assertEqual(
+                [item["text"] for item in index["multinet_model"]["commands"]],
+                ["你好灵溪", "小灵溪"],
+            )
+            packed = files[index["srmodels"]][0]
+            self.assertEqual(struct.unpack_from("<I", packed)[0], 2)
+            self.assertIn(b"mn7_cn", packed)
+            self.assertIn(b"fst", packed)
+            self.assertNotIn(b"wn9", packed)
 
 
 if __name__ == "__main__":

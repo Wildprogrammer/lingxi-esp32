@@ -54,7 +54,7 @@ void WifiBoard::StartNetwork() {
 
     // Initialize WiFi manager
     WifiManagerConfig config;
-    config.ssid_prefix = "Xiaozhi";
+    config.ssid_prefix = GetWifiSsidPrefix();
     config.language = Lang::CODE;
     config.show_ota_config = true;
     config.show_sleep_config = true;
@@ -266,6 +266,7 @@ std::string WifiBoard::GetBoardJson() {
     auto& wifi = WifiManager::GetInstance();
     std::string json = R"({"type":")" + std::string(BOARD_TYPE) + R"(",)";
     json += R"("name":")" + std::string(BOARD_NAME) + R"(",)";
+    json += R"("display_name":")" + std::string(DEVICE_DISPLAY_NAME) + R"(",)";
     json += R"("manufacturer":")" + std::string(BOARD_MANUFACTURER) + R"(",)";
 
     if (!wifi.IsConfigMode()) {

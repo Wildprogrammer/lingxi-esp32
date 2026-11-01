@@ -2,6 +2,14 @@
 
 （中文 | [English](README.md) | [日本語](README_ja.md)）
 
+> [!IMPORTANT]
+> **灵溪是 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的非官方衍生版本。**
+> 本仓库保留完整上游历史和 MIT 许可证，并新增
+> `wildprogrammer-esp32s3-n16r8` 开发板、灵溪唤醒/控制词、音频诊断和可校验音量控制。
+> 配套电脑端为
+> [Agent Session Gateway](https://github.com/Wildprogrammer/agent-role/tree/master/workflows/agent-session-gateway)。
+> 本仓库不是上游项目的官方发行版。
+
 ## 介绍
 
 👉 [人类：给 AI 装摄像头 vs AI：当场发现主人三天没洗头【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)

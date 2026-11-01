@@ -611,6 +611,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_WDMOMO_CGC_144
         bool "WDMomo ESP32-CGC-144"
         depends on IDF_TARGET_ESP32
+    config BOARD_TYPE_WILDPROGRAMMER_ESP32S3_N16R8
+        bool "Wildprogrammer ESP32-S3 N16R8 (INMP441 + MAX98357A)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_WK_ESP32S3_DEV
         bool "WK ESP32-S3 Dev Board (维控智能开发板)"
         depends on IDF_TARGET_ESP32S3
@@ -951,14 +954,18 @@ config CUSTOM_WAKE_WORD
     default "xiao tu dou"
     depends on USE_CUSTOM_WAKE_WORD
     help
-        Custom Wake Word, use pinyin for Chinese, separated by spaces
+        One or more custom wake words. Use pinyin separated by spaces for
+        Chinese, and separate multiple phrases with semicolons. The number and
+        order must match CUSTOM_WAKE_WORD_DISPLAY.
 
 config CUSTOM_WAKE_WORD_DISPLAY
     string "Custom Wake Word Display"
     default "小土豆"
     depends on USE_CUSTOM_WAKE_WORD
     help
-        Greeting sent to the server after wake word detection
+        Greeting sent to the server after wake word detection. Separate
+        multiple display phrases with semicolons in the same order as
+        CUSTOM_WAKE_WORD.
 
 config CUSTOM_WAKE_WORD_THRESHOLD
     int "Custom Wake Word Threshold (%)"

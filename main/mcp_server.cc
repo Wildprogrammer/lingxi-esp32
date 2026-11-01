@@ -424,7 +424,7 @@ void McpServer::ParseMessage(const cJSON* json, ResponseSender response_sender) 
         auto app_desc = esp_app_get_description();
         std::string message =
             "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{"
-            "\"name\":\"" BOARD_NAME "\",\"version\":\"";
+            "\"name\":\"" DEVICE_DISPLAY_NAME "\",\"version\":\"";
         message += app_desc->version;
         message += "\"}}";
         ReplyResult(id_int, message, response_sender);

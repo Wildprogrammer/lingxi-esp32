@@ -46,14 +46,18 @@ class StartupWakeWordHintTests(unittest.TestCase):
 
     def test_startup_hint_is_a_localized_one_time_assistant_message_with_a_five_second_timeout(self):
         locales = ROOT / "main/assets/locales"
-        english = json.loads((locales / "en-US/language.json").read_text())["strings"]["WAKE_WORD_HINT"]
-        chinese = json.loads((locales / "zh-CN/language.json").read_text())["strings"]["WAKE_WORD_HINT"]
+        english = json.loads(
+            (locales / "en-US/language.json").read_text(encoding="utf-8")
+        )["strings"]["WAKE_WORD_HINT"]
+        chinese = json.loads(
+            (locales / "zh-CN/language.json").read_text(encoding="utf-8")
+        )["strings"]["WAKE_WORD_HINT"]
         method = definition(
-            (ROOT / "main/application.cc").read_text(),
+            (ROOT / "main/application.cc").read_text(encoding="utf-8"),
             "void Application::ShowStartupWakeWordHint()",
         )
         hide = definition(
-            (ROOT / "main/application.cc").read_text(),
+            (ROOT / "main/application.cc").read_text(encoding="utf-8"),
             "void Application::HideStartupWakeWordHint()",
         )
         platform = r'''
@@ -114,7 +118,9 @@ class StartupWakeWordHintTests(unittest.TestCase):
             class AudioService {
             public:
                 bool running = true;
-                std::vector<std::string> words = {"Hi,ESP", "", "Hi,ESP", "Alexa"};
+                std::vector<std::string> words = {
+                    "Hi,ESP", "", "Hi,ESP", "停止", "闭嘴", "退出", "Alexa"
+                };
                 bool IsWakeWordRunning() const { return running; }
                 std::vector<std::string> GetWakeWords() const { return words; }
             };

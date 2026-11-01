@@ -23,6 +23,9 @@ from datetime import datetime
 from pathlib import Path
 
 
+CUSTOM_WAKE_WORD_COMMAND_PATTERN = re.compile(r"^[a-z]+(?: [a-z]+){1,7}$")
+
+
 # =============================================================================
 # Pack model functions (from pack_model.py)
 # =============================================================================
@@ -231,34 +234,39 @@ def process_sr_models(wakenet_model_dirs, multinet_model_dirs, build_dir, assets
         for wakenet_model_dir in wakenet_model_dirs:
             wakenet_name = os.path.basename(wakenet_model_dir)
             wakenet_dst = os.path.join(sr_models_build_dir, wakenet_name)
-            if copy_wakenet_model(wakenet_model_dir, wakenet_dst, idf_target):
-                models_processed += 1
-                print(f"Added wakenet model: {wakenet_name}")
+            if not copy_wakenet_model(wakenet_model_dir, wakenet_dst, idf_target):
+                raise FileNotFoundError(f"Failed to copy WakeNet model: {wakenet_name}")
+            models_processed += 1
+            print(f"Added wakenet model: {wakenet_name}")
     
     # Copy multinet models if available
     if multinet_model_dirs:
         for multinet_model_dir in multinet_model_dirs:
             multinet_name = os.path.basename(multinet_model_dir)
             multinet_dst = os.path.join(sr_models_build_dir, multinet_name)
-            if copy_directory(multinet_model_dir, multinet_dst):
-                models_processed += 1
-                print(f"Added multinet model: {multinet_name}")
+            if not copy_directory(multinet_model_dir, multinet_dst):
+                raise FileNotFoundError(f"Failed to copy MultiNet model: {multinet_name}")
+            models_processed += 1
+            print(f"Added multinet model: {multinet_name}")
     
-    if models_processed == 0:
-        print("Warning: No SR models were successfully processed")
-        return None
+    expected_models = len(wakenet_model_dirs) + len(multinet_model_dirs)
+    if models_processed != expected_models:
+        raise RuntimeError(
+            f"Processed {models_processed} of {expected_models} selected SR models"
+        )
     
     # Use pack_models function to generate srmodels.bin
     srmodels_output = os.path.join(sr_models_build_dir, "srmodels.bin")
     try:
         pack_models(sr_models_build_dir, "srmodels.bin")
-        print(f"Generated: {srmodels_output}")
-        # Copy srmodels.bin to assets directory
-        copy_file(srmodels_output, os.path.join(assets_dir, "srmodels.bin"))
-        return "srmodels.bin"
-    except Exception as e:
-        print(f"Error: Failed to generate srmodels.bin: {e}")
-        return None
+    except Exception as error:
+        raise RuntimeError(f"Failed to generate srmodels.bin: {error}") from error
+    if not os.path.isfile(srmodels_output) or os.path.getsize(srmodels_output) <= 4:
+        raise RuntimeError("Generated srmodels.bin is missing or contains no model data")
+    print(f"Generated: {srmodels_output}")
+    if not copy_file(srmodels_output, os.path.join(assets_dir, "srmodels.bin")):
+        raise RuntimeError("Failed to copy srmodels.bin into the assets image")
+    return "srmodels.bin"
 
 
 def process_text_font(text_font_file, assets_dir):
@@ -743,21 +751,44 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
                 value = line.split('=', 1)[1]
                 try:
                     config_values['threshold'] = int(value)
-                except ValueError:
-                    try:
-                        config_values['threshold'] = float(value)
-                    except ValueError:
-                        print(f"Warning: Invalid threshold value: {value}")
-                        config_values['threshold'] = 20  # default (will be converted to 0.2)
+                except ValueError as error:
+                    raise ValueError(
+                        f"invalid custom wake-word threshold: {value!r}"
+                    ) from error
     
-    # Return config only if custom wake word is enabled and required fields are present
-    if (config_values.get('use_custom_wake_word', False) and 
-        'wake_word' in config_values and 
-        'display' in config_values and 
-        'threshold' in config_values):
+    if config_values.get('use_custom_wake_word', False):
+        missing = [
+            field for field in ('wake_word', 'display', 'threshold')
+            if field not in config_values
+        ]
+        if missing:
+            raise ValueError(
+                "custom wake-word mode requires CONFIG_CUSTOM_WAKE_WORD, "
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY, and "
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD; missing: " + ", ".join(missing)
+            )
+        wake_words = [item.strip() for item in config_values['wake_word'].split(';')]
+        displays = [item.strip() for item in config_values['display'].split(';')]
+        if (
+            not 1 <= len(wake_words) <= 8
+            or len(wake_words) != len(displays)
+            or any(not item for item in wake_words + displays)
+            or len(set(wake_words)) != len(wake_words)
+            or len(set(displays)) != len(displays)
+            or any(not CUSTOM_WAKE_WORD_COMMAND_PATTERN.fullmatch(item) for item in wake_words)
+        ):
+            raise ValueError(
+                "custom wake-word commands and displays must contain 1-8 "
+                "unique, non-empty, semicolon-aligned values; commands must "
+                "contain 2-8 space-separated lowercase pinyin words"
+            )
+        if not 1 <= config_values['threshold'] <= 100:
+            raise ValueError("custom wake-word threshold must be between 1 and 100")
         return {
-            'wake_word': config_values['wake_word'],
-            'display': config_values['display'],
+            'commands': [
+                {'command': command, 'text': display, 'action': 'wake'}
+                for command, display in zip(wake_words, displays)
+            ],
             'threshold': config_values['threshold'] / 100.0  # Convert to decimal (20 -> 0.2)
         }
     
@@ -910,6 +941,8 @@ def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font
             wakenet_model_paths, multinet_model_paths, temp_build_dir, assets_dir,
             idf_target=idf_target,
         ) if (wakenet_model_paths or multinet_model_paths) else None
+        if (wakenet_model_paths or multinet_model_paths) and not srmodels:
+            raise RuntimeError("Selected speech models were not packaged")
         text_font = process_text_font(text_font_path, assets_dir) if text_font_path else None
         emoji_collection = process_emoji_collection(emoji_collection_path, assets_dir) if emoji_collection_path else None
         extra_files = process_extra_files(extra_files_path, assets_dir) if extra_files_path else None
@@ -1026,6 +1059,14 @@ def main():
     # 3. Only package multinet models if USE_CUSTOM_WAKE_WORD=y
     if wake_word_config['use_custom_wake_word']:
         multinet_model_paths = get_multinet_model_paths(multinet_model_names, args.esp_sr_model_path)
+        if (
+            not multinet_model_names
+            or len(multinet_model_paths) != len(multinet_model_names)
+        ):
+            parser.error(
+                "Custom wake-word detection requires every selected ESP-SR "
+                "MultiNet model to be available"
+            )
     elif multinet_model_names:
         print(f"  Note: Found multinet models {multinet_model_names} but USE_CUSTOM_WAKE_WORD is disabled, skipping")
     
@@ -1055,9 +1096,15 @@ def main():
     extra_files_path = args.extra_files
     
     # Read custom wake word configuration
-    custom_wake_word_config = read_custom_wake_word_from_sdkconfig(args.sdkconfig)
+    try:
+        custom_wake_word_config = read_custom_wake_word_from_sdkconfig(args.sdkconfig)
+    except ValueError as error:
+        parser.error(str(error))
     multinet_model_info = None
     
+    if wake_word_config['use_custom_wake_word'] and not custom_wake_word_config:
+        parser.error("Custom wake-word configuration is incomplete")
+
     if custom_wake_word_config and multinet_model_paths:
         # Determine language from multinet models
         language = get_language_from_multinet_models(multinet_model_names)
@@ -1067,15 +1114,10 @@ def main():
             "language": language,
             "duration": 3000,  # Default duration in ms
             "threshold": custom_wake_word_config['threshold'],
-            "commands": [
-                {
-                    "command": custom_wake_word_config['wake_word'],
-                    "text": custom_wake_word_config['display'],
-                    "action": "wake"
-                }
-            ]
+            "commands": custom_wake_word_config['commands']
         }
-        print(f"  custom wake word: {custom_wake_word_config['wake_word']} ({custom_wake_word_config['display']})")
+        for command in custom_wake_word_config['commands']:
+            print(f"  custom wake word: {command['command']} ({command['text']})")
         print(f"  wake word language: {language}")
         print(f"  wake word threshold: {custom_wake_word_config['threshold']}")
 
@@ -1086,7 +1128,7 @@ def main():
                 idf_target=idf_target, multinet_model_info=multinet_model_info,
                 name_length=args.name_length, max_size=args.max_size,
             )
-        except (ValueError, OSError) as error:
+        except (ValueError, OSError, RuntimeError) as error:
             parser.error(str(error))
         print(f"Configured speech models in {args.output}")
         return

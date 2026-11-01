@@ -1,0 +1,10 @@
+{
+    "type": "wildprogrammer-esp32s3-n16r8",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "wildprogrammer-esp32s3-n16r8",
+            "display_name": "灵溪"
+        }
+    ]
+}

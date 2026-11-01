@@ -16,5 +16,6 @@ main/mmap_generate_emoji.h
 .cache
 *.pyc
 *.bin
+main/boards/wildprogrammer-esp32s3-n16r8/config.local.json
 mmap_generate_*.h
 .clangd

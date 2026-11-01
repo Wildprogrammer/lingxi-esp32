@@ -22,6 +22,14 @@
 
 #define TAG "Application"
 
+namespace {
+
+bool IsLocalVoiceControlCommand(const std::string& command) {
+    return command == "停止" || command == "闭嘴" || command == "退出";
+}
+
+}  // namespace
+
 Application::Application() : notify_player_(audio_service_) {
     event_group_ = xEventGroupCreate();
 
@@ -70,8 +78,9 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
-    // Print board name/version info
-    display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+    // Show the user-facing device name without changing the compatibility-
+    // sensitive board identity used by protocol User-Agent headers.
+    display->SetChatMessage("system", SystemInfo::GetDisplayUserAgent().c_str());
 
     // Setup the audio service
     auto codec = board.GetAudioCodec();
@@ -916,6 +925,30 @@ void Application::HandleWakeWordDetectedEvent() {
     auto wake_word = audio_service_.GetLastWakeWord();
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
+    if ((state == kDeviceStateSpeaking || state == kDeviceStateListening) &&
+        IsLocalVoiceControlCommand(wake_word)) {
+        AbortSpeaking(kAbortReasonWakeWordDetected);
+        while (audio_service_.PopPacketFromSendQueue())
+            ;
+        // MultiNet already recognized the complete local command. Forward its
+        // text immediately instead of asking the user to repeat it after the
+        // playback interruption.
+        protocol_->SendWakeWordDetected(wake_word);
+        SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
+
+    if (state == kDeviceStateIdle && IsLocalVoiceControlCommand(wake_word)) {
+        // These short commands remain active so they can interrupt playback,
+        // but must never open a new conversation from idle. Short command
+        // phrases are more likely than the Lingxi aliases to match ambient
+        // speech, so treating them as wake words here causes false sessions.
+        ESP_LOGW(TAG, "Ignoring idle local voice control command: %s", wake_word.c_str());
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
+
     if (state == kDeviceStateIdle) {
         BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateNotifying) {
@@ -1100,7 +1133,8 @@ void Application::ShowStartupWakeWordHint() {
     const auto wake_words = audio_service_.GetWakeWords();
     std::string words;
     for (auto it = wake_words.begin(); it != wake_words.end(); ++it) {
-        if (it->empty() || std::find(wake_words.begin(), it, *it) != it) {
+        if (it->empty() || *it == "停止" || *it == "闭嘴" || *it == "退出" ||
+            std::find(wake_words.begin(), it, *it) != it) {
             continue;
         }
         if (!words.empty()) {

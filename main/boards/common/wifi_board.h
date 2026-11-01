@@ -14,6 +14,10 @@ protected:
 
     virtual std::string GetBoardJson() override;
 
+    // User-facing prefix used by the provisioning access point and DHCP
+    // hostname. Boards may override it without changing the upstream default.
+    virtual const char* GetWifiSsidPrefix() const { return "Xiaozhi"; }
+
     /**
      * Handle network event (called from WiFi manager callbacks)
      * @param event The network event type
